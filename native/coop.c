@@ -62,6 +62,8 @@ static void logf_(const char *fmt, ...) {
     fputc('\n', g_log);
     fflush(g_log);
 }
+static int g_lobby;                       // join-code lobby mode (see "lobby" below)
+static void set_status(const char *fmt, ...);
 static void hexline(const char *tag, const uint8_t *p, size_t n) {
     char b[200]; size_t k = 0;
     for (size_t i = 0; i < n && i < 48 && k < sizeof b - 4; i++) k += snprintf(b + k, sizeof b - k, "%02x", p[i]);
@@ -105,7 +107,7 @@ static void *ecalloc(size_t n) {
 #include "lsnet.h"
 
 static void net_init(void) {
-    if (g_ls_role) { lsn_init(g_ls_role); return; }   // lockstep: authenticated TCP (lsnet.h), no UDP socket
+    if (g_ls_role) { if (!g_lobby) lsn_init(g_ls_role); return; }   // lockstep: authenticated TCP (lsnet.h); in lobby mode the lobby thread starts it
     if (g_sock != INVALID_SOCKET || !g_role) return;
     WSADATA w; WSAStartup(MAKEWORD(2, 2), &w);
     g_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
@@ -570,6 +572,7 @@ static void hook_update_frame(void *game, float dt, uint32_t arg3) {
                 uint64_t s = *(uint64_t *)(g + G_SEED);
                 if (s != g_ls_expect_seed1 && g_ls_desyncs < 20) {
                     g_ls_desyncs++;
+                    if (g_lobby) set_status("WARN|The two games are out of sync (desync). Host: save the game, then both restart the session with that save.");
                     logf_("lockstep client: DESYNC at host seq %u: seed %016llx, host %016llx", g_ls_cur_seq,
                           (unsigned long long)s, (unsigned long long)g_ls_expect_seed1);
                 }
@@ -909,9 +912,219 @@ static void dev_dump_components(void) {
 }
 
 static void *find_component_rtti(const char *needle);
+// ---- lobby (join-code mode, FCOOP_LOBBY=1; started by FoundationCoop.exe) -----------------------------------
+// Before the simulation starts, a network thread owns the connection: the host sends its save file (FCOOP_SAVE)
+// to the client, which writes it into its own Save Game\COOP folder. Both players load that save (loading starts
+// paused). When both cities are loaded the host sends GO, the thread hands the connection to the game thread and
+// lockstep starts on both sides. Player commands are dropped until then, so nobody can unpause or build early.
+// Progress goes to <instance>\status.txt ("STATE|text"), which the launcher shows.
+#define LB_MAGIC 0x424c4f46u   // "FOLB" {magic, kind, a, b, data}
+#define LB_HELLO 1             // host: a = protocol, b = save size, data = file name; client: a = protocol
+#define LB_READY 2             // client: city loaded, a = component count (fingerprint)
+#define LB_GO    3             // host: start lockstep now
+#define LB_PROTO 1
+#define SV_MAGIC 0x56534f46u   // "FOSV" {magic, offset, bytes}
+#define SV_CHUNK (128 * 1024)
+static int g_lobby;
+static volatile LONG g_city_loaded, g_city_comps, g_lobby_go;
+static volatile DWORD g_city_tick, g_last_frame_tick;
+static HANDLE g_lobby_thread;
+static CRITICAL_SECTION g_status_cs;
+static void ls_client_on_msg(uint32_t type, uint8_t *buf, uint32_t n);
+
+static void set_status(const char *fmt, ...) {
+    static char last[512];
+    char b[512]; va_list ap; va_start(ap, fmt); vsnprintf(b, sizeof b, fmt, ap); va_end(ap);
+    EnterCriticalSection(&g_status_cs);
+    if (strcmp(b, last) != 0) {
+        strcpy(last, b);
+        wchar_t p[MAX_PATH], t[MAX_PATH];
+        _snwprintf(p, MAX_PATH - 1, L"%ls\\status.txt", g_dir); p[MAX_PATH - 1] = 0;
+        _snwprintf(t, MAX_PATH - 1, L"%ls\\status.tmp", g_dir); t[MAX_PATH - 1] = 0;
+        FILE *f = _wfopen(t, L"wb");
+        if (f) { fputs(b, f); fclose(f); MoveFileExW(t, p, MOVEFILE_REPLACE_EXISTING); }
+        logf_("status: %s", b);
+    }
+    LeaveCriticalSection(&g_status_cs);
+}
+
+static int lobby_send(uint32_t kind, uint32_t a, uint32_t b, const void *data, uint32_t n) {
+    uint8_t m[16 + 256];
+    if (n > 256) n = 256;
+    uint32_t h[4] = { LB_MAGIC, kind, a, b };
+    memcpy(m, h, 16); if (n) memcpy(m + 16, data, n);
+    return lsn_send(LSN_LOBBY, m, 16 + n);
+}
+
+// game thread, pre-go: is a city loaded? (component count = rough fingerprint of the loaded world)
+static void lobby_track_city(void) {
+    DWORD now = GetTickCount();
+    if (g_last_frame_tick && now - g_last_frame_tick > 2000) g_city_loaded = 0;   // frames stopped: loading screen / menu
+    g_last_frame_tick = now;
+    if (!find_component_rtti("PlaCCompMainGameLoop@@")) { g_city_loaded = 0; return; }
+    if (g_city_loaded) return;
+    uint8_t **reg = (uint8_t **)(g_base + RVA_COMP_REGISTRY);
+    LONG n = 0;
+    for (uint8_t *s = reg[0]; s && s < reg[1]; s += 16) if (*(void **)(s + 8)) n++;
+    g_city_comps = n; g_city_tick = now; g_city_loaded = 1;
+    logf_("lobby: city loaded (%ld components)", (long)n);
+}
+
+static struct { int hello, ready, proto_bad; LONG comps; } LB;
+static void lobby_host_on_msg(uint32_t type, uint8_t *buf, uint32_t n) {
+    if (type != LSN_LOBBY || n < 16 || ((uint32_t *)buf)[0] != LB_MAGIC) { logf_("lobby host: unexpected message %u dropped", type); return; }
+    uint32_t kind = ((uint32_t *)buf)[1], a = ((uint32_t *)buf)[2];
+    if (kind == LB_HELLO) { LB.hello = 1; LB.proto_bad = a != LB_PROTO; logf_("lobby host: client protocol %u", a); }
+    else if (kind == LB_READY) { LB.ready = 1; LB.comps = (LONG)a; logf_("lobby host: client ready (%u components)", a); }
+}
+
+static DWORD WINAPI lobby_host(void *arg) {
+    (void)arg;
+    wchar_t save[MAX_PATH] = L"";
+    GetEnvironmentVariableW(L"FCOOP_SAVE", save, MAX_PATH);
+    HANDLE f = CreateFileW(save, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    LARGE_INTEGER fsz = {0};
+    if (f == INVALID_HANDLE_VALUE || !GetFileSizeEx(f, &fsz) || fsz.QuadPart <= 0 || fsz.QuadPart > 0x7fffffff) {
+        set_status("ERR|Cannot read the city save (%ls).", save); return 0;
+    }
+    char name[200]; const wchar_t *bn = wcsrchr(save, L'\\'); bn = bn ? bn + 1 : save;
+    WideCharToMultiByte(CP_UTF8, 0, bn, -1, name, sizeof name, NULL, NULL);
+    lsn_init(1);
+    if (!N.role) { set_status("ERR|Network could not start (port in use? see coop.log)."); return 0; }
+    set_status("WAIT|Waiting for your friend to join...");
+    static uint8_t chunk[8 + SV_CHUNK];
+    int sent = 0, had = 0;
+    for (;;) {
+        lsn_poll(lobby_host_on_msg);
+        if (!N.ready) {
+            if (had) { set_status("WAIT|Your friend disconnected. Waiting for your friend to join again..."); had = 0; }
+            sent = 0; memset(&LB, 0, sizeof LB); Sleep(50); continue;
+        }
+        had = 1;
+        if (LB.proto_bad) { set_status("ERR|Your friend has a different version of the co-op kit. Both need the same kit."); Sleep(500); continue; }
+        if (!sent) {
+            if (!LB.hello) { Sleep(10); continue; }
+            uint32_t size = (uint32_t)fsz.QuadPart, off = 0, last_pct = 101;
+            lobby_send(LB_HELLO, LB_PROTO, size, name, (uint32_t)strlen(name));
+            SetFilePointer(f, 0, NULL, FILE_BEGIN);
+            while (off < size && N.ready) {
+                DWORD got = 0;
+                if (!ReadFile(f, chunk + 8, SV_CHUNK, &got, NULL) || !got) break;
+                ((uint32_t *)chunk)[0] = SV_MAGIC; ((uint32_t *)chunk)[1] = off;
+                if (!lsn_send(LSN_SAVE, chunk, 8 + got)) break;
+                off += got;
+                uint32_t pct = (uint32_t)((uint64_t)off * 100 / size);
+                if (pct / 5 != last_pct / 5) { set_status("BUSY|Friend connected. Sending the city save: %u%%", pct); last_pct = pct; }
+            }
+            if (off != size) { logf_("lobby host: save transfer interrupted at %u/%u", off, size); continue; }
+            logf_("lobby host: save sent (%u bytes)", size);
+            sent = 1;
+        }
+        if (LB.ready && g_city_loaded) {
+            if (LB.comps != g_city_comps)
+                logf_("lobby host: note: component count differs (host %ld, client %ld); UI parts vary, the desync check is authoritative", (long)g_city_comps, (long)LB.comps);
+            lobby_send(LB_GO, 0, 0, NULL, 0);
+            set_status("PLAY|Playing together! Unpause when you are ready. Only the host's speed setting counts.");
+            CloseHandle(f);
+            g_lobby_go = 1;
+            return 0;
+        }
+        if (!g_city_loaded) set_status("WAIT|Save sent. Now load your city: Load Game, then the newest save (top of the list). Keep it paused.");
+        else set_status("WAIT|Your city is loaded. Waiting for your friend to load it... Keep the game paused.");
+        Sleep(20);
+    }
+}
+
+static struct { int hello, done, go; uint32_t size, got; HANDLE f; wchar_t part[MAX_PATH], final[MAX_PATH]; DWORD done_tick; uint32_t last_pct; } LC;
+static void lobby_client_reset(void) {
+    if (LC.f && LC.f != INVALID_HANDLE_VALUE) { CloseHandle(LC.f); DeleteFileW(LC.part); }
+    LC.f = NULL; LC.hello = 0; LC.got = LC.size = 0; LC.last_pct = 101;
+}
+static void lobby_client_on_msg(uint32_t type, uint8_t *buf, uint32_t n) {
+    if (type == LSN_FRAME) { ls_client_on_msg(type, buf, n); return; }   // frames right after GO: queued for the game thread
+    if (type == LSN_LOBBY && n >= 16 && ((uint32_t *)buf)[0] == LB_MAGIC) {
+        uint32_t kind = ((uint32_t *)buf)[1], a = ((uint32_t *)buf)[2], b = ((uint32_t *)buf)[3];
+        if (kind == LB_GO) { LC.go = 1; logf_("lobby client: GO"); return; }
+        if (kind != LB_HELLO) return;
+        if (a != LB_PROTO) { set_status("ERR|The host has a different version of the co-op kit. Both need the same kit."); return; }
+        lobby_client_reset();
+        // file name: keep letters, digits, space, - _ . only
+        char nm[120]; uint32_t k = 0;
+        for (uint32_t i = 16; i < n && k < sizeof nm - 12; i++) {
+            char c = (char)buf[i];
+            if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == ' ' || c == '-' || c == '_' || c == '.') nm[k++] = c;
+        }
+        nm[k] = 0;
+        if (!k || strstr(nm, "..") || k < 11 || _stricmp(nm + k - 11, ".foundation") != 0) strcpy(nm, "coop-session.foundation");
+        wchar_t dir[MAX_PATH]; const wchar_t *subs[] = { L"Documents", L"Documents\\Polymorph Games", L"Documents\\Polymorph Games\\Foundation",
+            L"Documents\\Polymorph Games\\Foundation\\Save Game", L"Documents\\Polymorph Games\\Foundation\\Save Game\\COOP" };
+        for (int i = 0; i < 5; i++) { _snwprintf(dir, MAX_PATH - 1, L"%ls\\%ls", g_dir, subs[i]); dir[MAX_PATH - 1] = 0; CreateDirectoryW(dir, NULL); }
+        _snwprintf(LC.final, MAX_PATH - 1, L"%ls\\%hs", dir, nm); LC.final[MAX_PATH - 1] = 0;
+        _snwprintf(LC.part, MAX_PATH - 1, L"%ls.part", LC.final); LC.part[MAX_PATH - 1] = 0;
+        LC.f = CreateFileW(LC.part, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+        if (LC.f == INVALID_HANDLE_VALUE) { LC.f = NULL; set_status("ERR|Cannot write the save into the co-op folder."); return; }
+        LC.size = b; LC.hello = 1; LC.done = 0;
+        logf_("lobby client: receiving save %s (%u bytes)", nm, b);
+        return;
+    }
+    if (type == LSN_SAVE && n >= 8 && ((uint32_t *)buf)[0] == SV_MAGIC && LC.hello && !LC.done) {
+        uint32_t off = ((uint32_t *)buf)[1], len = n - 8; DWORD wr = 0;
+        if (off != LC.got || (uint64_t)off + len > LC.size || !WriteFile(LC.f, buf + 8, len, &wr, NULL) || wr != len) {
+            set_status("ERR|The save transfer failed. Reconnecting..."); lobby_client_reset(); lsn_close("save transfer error"); return;
+        }
+        LC.got += len;
+        uint32_t pct = (uint32_t)((uint64_t)LC.got * 100 / (LC.size ? LC.size : 1));
+        if (pct / 5 != LC.last_pct / 5) { set_status("BUSY|Connected. Receiving the city save: %u%%", pct); LC.last_pct = pct; }
+        if (LC.got == LC.size) {
+            CloseHandle(LC.f); LC.f = NULL;
+            if (!MoveFileExW(LC.part, LC.final, MOVEFILE_REPLACE_EXISTING)) { set_status("ERR|Cannot store the received save."); return; }
+            LC.done = 1; LC.done_tick = GetTickCount();
+            logf_("lobby client: save complete");
+        }
+        return;
+    }
+    logf_("lobby client: unexpected message %u dropped", type);
+}
+
+static DWORD WINAPI lobby_client(void *arg) {
+    (void)arg;
+    LC.last_pct = 101;
+    lsn_init(2);
+    if (!N.role) { set_status("ERR|Network could not start (see coop.log)."); return 0; }
+    set_status("WAIT|Connecting to the host...");
+    int had = 0, ready_sent = 0;
+    for (;;) {
+        lsn_poll(lobby_client_on_msg);
+        if (LC.go) { set_status("PLAY|Playing together! The host controls the game speed."); g_lobby_go = 1; return 0; }
+        if (!N.ready) {
+            if (had) { set_status("WAIT|Connection lost. Reconnecting to the host..."); had = 0; }
+            if (!LC.done) lobby_client_reset();
+            ready_sent = 0; Sleep(100); continue;
+        }
+        if (!had) { had = 1; lobby_send(LB_HELLO, LB_PROTO, 0, NULL, 0); if (!LC.done) set_status("BUSY|Connected. Receiving the city save..."); }
+        if (LC.done && !ready_sent) {
+            if (g_city_loaded && g_city_tick < LC.done_tick)
+                set_status("WARN|You loaded a city before the host's save arrived. Go back to the main menu and load the newest save (top of the list).");
+            else if (g_city_loaded) {
+                lobby_send(LB_READY, (uint32_t)g_city_comps, LB_PROTO, NULL, 0); ready_sent = 1;
+                set_status("WAIT|Your city is loaded. Waiting for the host...");
+            } else set_status("WAIT|Save received. Now load it: Load Game, then the newest save (top of the list). Keep it paused.");
+        }
+        Sleep(20);
+    }
+}
+
 static void ls_check_go(void) {
     dev_dump_components();
     if (g_ls_go || !g_ls_role) return;
+    if (g_lobby) {
+        lobby_track_city();
+        if (g_lobby_go) {   // the lobby thread has finished: it no longer touches the connection
+            WaitForSingleObject(g_lobby_thread, 5000);
+            g_ls_go = 1; logf_("lockstep: go (role %d, lobby)", g_ls_role);
+        }
+        return;
+    }
     wchar_t pth[MAX_PATH]; _snwprintf(pth, MAX_PATH - 1, L"%ls\\lockstep_go", g_dir); pth[MAX_PATH - 1] = 0;
     if (GetFileAttributesW(pth) == INVALID_FILE_ATTRIBUTES) return;
     // only inside a loaded city (the main game loop component exists); "go" in the main menu waits
@@ -1058,7 +1271,10 @@ static void ls_host_throttle(void) {
     while ((int64_t)g_ls_seq - g_ls_last_ack > LS_WINDOW) {   // includes "client not started yet" (last_ack = -1)
         Sleep(1);
         ls_host_drain_acks();
-        if (!warned && GetTickCount() - t0 > 3000) { logf_("lockstep host: waiting for client (seq %u, ack %lld)", g_ls_seq, (long long)g_ls_last_ack); warned = 1; }
+        if (!warned && GetTickCount() - t0 > 3000) {
+            logf_("lockstep host: waiting for client (seq %u, ack %lld)", g_ls_seq, (long long)g_ls_last_ack); warned = 1;
+            if (g_lobby) set_status("WARN|Waiting for your friend's game (slow or lost connection). If it does not come back, restart both games.");
+        }
     }
 }
 
@@ -1174,6 +1390,11 @@ static void hook_record_cmd(uint8_t *R, void *cmd) {
 
 // client: commands the local player issues while lockstep runs are sent to the host instead of being executed
 static void hook_push_cmd(void *game, void *cmd) {
+    if (g_lobby && !g_ls_go && g_city_loaded && cmd) {   // before both are ready nobody may unpause or build
+        static int n; if (n++ < 20) logf_("lobby: command %s ignored (waiting for both players)", rtti_name(cmd));
+        ((void (*)(void *, int))(*(void ***)cmd)[1])(cmd, 1);
+        return;
+    }
     if (g_ls_role == 2 && g_ls_started && cmd) {
         static uint8_t pkt[65000];
         uint32_t nn = 0;
@@ -1695,7 +1916,11 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID r) {
     else if (!wcscmp(role, L"client")) { g_ls_role = 2; g_my_port = 27801; }
     g_role = g_send || g_recv || g_ls_role;
     logf_("role %ls: send=%d recv=%d my_port=%u peer_port=%u", role, g_send, g_recv, g_my_port, g_peer_port);
+    InitializeCriticalSection(&g_status_cs);
+    { wchar_t lb[8] = L""; GetEnvironmentVariableW(L"FCOOP_LOBBY", lb, 8); g_lobby = lb[0] == L'1' && g_ls_role; }
     int ok = install_hook();
+    if (g_lobby && ok) g_lobby_thread = CreateThread(NULL, 0, g_ls_role == 1 ? lobby_host : lobby_client, NULL, 0, NULL);
+    else if (g_lobby) set_status("ERR|This game version is not supported by the co-op kit (see coop.log).");
     logf_("coop.dll loaded, pid %lu, base %p, updateFrame hook %s", GetCurrentProcessId(), g_base, ok ? "installed" : "FAILED");
     if (g_log) fflush(g_log);
     return TRUE;

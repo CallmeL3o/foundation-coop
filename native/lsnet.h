@@ -5,7 +5,8 @@
 //  - Pre-shared key: 32 random bytes as 64 hex chars in <instance>\coop_key.txt (the host makes it, the friend gets a copy
 //    through a private channel). Without a key file there is no networking at all.
 //  - Host binds FCOOP_LS_BIND (default 127.0.0.1) and accepts only the IP in FCOOP_LS_ALLOW (default 127.0.0.1),
-//    one connection at a time; the handshake must finish within 5 s.
+//    one connection at a time; the handshake must finish within 5 s. FCOOP_LS_ALLOW=* (join-code mode) accepts any
+//    address that proves the key; after the first successful handshake only that address is accepted.
 //  - Handshake: host -> "FCH1" Nh[16]; client -> "FCC1" Nc[16] HMAC(K, "client"|Nh|Nc); host -> "FCS1" HMAC(K, "host"|Nh|Nc).
 //    Both nonces from BCryptGenRandom. Session key S = HMAC(K, "session"|Nh|Nc).
 //  - Every message: u32 bodylen | u64 counter | u32 type | payload | mac[16] = HMAC(S, dir|counter|type|payload)[0:16],
@@ -19,6 +20,8 @@
 #define LSN_ACK   2   // client -> host: frame acknowledged
 #define LSN_CMD   3   // client -> host: serialized player command
 #define LSN_UIEV  4   // client -> host: UI event
+#define LSN_LOBBY 5   // both: lobby (hello / ready / go) before the simulation starts
+#define LSN_SAVE  6   // host -> client: a chunk of the host's save file
 #define LSN_MAX_BODY (1u << 20)
 
 typedef void (*lsn_handler)(uint32_t type, uint8_t *payload, uint32_t n);
@@ -31,7 +34,7 @@ static struct {
     DWORD hs_start;
     uint64_t send_ctr, recv_ctr;
     uint8_t *rbuf; size_t rlen, rcap;
-    char bind_ip[64], allow_ip[64], host_ip[64]; unsigned short port;
+    char bind_ip[64], allow_ip[64], host_ip[64], cur_ip[64]; unsigned short port;
     BCRYPT_ALG_HANDLE alg;
     DWORD next_connect;
 } N;
@@ -79,8 +82,8 @@ static int lsn_send_raw(const void *p, size_t n) {
     const char *c = (const char *)p; DWORD t0 = GetTickCount();
     while (n) {
         int r = send(N.sock, c, (int)n, 0);
-        if (r > 0) { c += r; n -= (size_t)r; continue; }
-        if (WSAGetLastError() != WSAEWOULDBLOCK || GetTickCount() - t0 > 5000) { lsn_close("send failed"); return 0; }
+        if (r > 0) { c += r; n -= (size_t)r; t0 = GetTickCount(); continue; }
+        if (WSAGetLastError() != WSAEWOULDBLOCK || GetTickCount() - t0 > 15000) { lsn_close("send failed"); return 0; }
         fd_set w; FD_ZERO(&w); FD_SET(N.sock, &w); struct timeval tv = {0, 20000}; select(0, NULL, &w, NULL, &tv);
     }
     return 1;
@@ -148,7 +151,9 @@ static void lsn_parse(lsn_handler h) {
                 lsn_hmac(N.key, 32, "host", 4, N.nh, 16, N.nc, 16, m + 4);
                 if (!lsn_send_raw(m, sizeof m)) return;
                 lsn_hmac(N.key, 32, "session", 7, N.nh, 16, N.nc, 16, N.skey);
-                N.ready = 1; logf_("lsnet: session established with client"); continue;
+                N.ready = 1; logf_("lsnet: session established with client %s", N.cur_ip);
+                if (!strcmp(N.allow_ip, "*")) { strcpy(N.allow_ip, N.cur_ip); logf_("lsnet: from now on only %s may connect", N.allow_ip); }
+                continue;
             }
             break;
         }
@@ -162,7 +167,8 @@ static void lsn_parse(lsn_handler h) {
         if (!lsn_hmac(N.skey, 32, &dir, 1, b, blen - 16, NULL, 0, mac) || !lsn_eq(mac, b + blen - 16, 16)) { lsn_close("bad MAC"); return; }
         if (ctr != N.recv_ctr) { lsn_close("bad counter"); return; }
         N.recv_ctr++;
-        int ok_type = N.role == 1 ? (type == LSN_ACK || type == LSN_CMD || type == LSN_UIEV) : (type == LSN_FRAME);
+        int ok_type = N.role == 1 ? (type == LSN_ACK || type == LSN_CMD || type == LSN_UIEV || type == LSN_LOBBY)
+                                  : (type == LSN_FRAME || type == LSN_LOBBY || type == LSN_SAVE);
         if (!ok_type) { lsn_close("unexpected message type"); return; }
         off += 4 + (size_t)blen;
         h(type, b + 12, blen - 12 - 16);
@@ -179,13 +185,14 @@ static void lsn_poll(lsn_handler h) {
             SOCKET s = accept(N.lsock, (struct sockaddr *)&pa, &pl);
             if (s == INVALID_SOCKET) return;
             char ip[64]; inet_ntop(AF_INET, &pa.sin_addr, ip, sizeof ip);
-            if (strcmp(ip, N.allow_ip) != 0) { logf_("lsnet: rejected connection from %s (not the allowed peer)", ip); closesocket(s); return; }
+            if (strcmp(N.allow_ip, "*") != 0 && strcmp(ip, N.allow_ip) != 0) { logf_("lsnet: rejected connection from %s (not the allowed peer)", ip); closesocket(s); return; }
             u_long nb = 1; ioctlsocket(s, FIONBIO, &nb);
             BOOL nd = TRUE; setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (const char *)&nd, sizeof nd);
             N.sock = s; N.hs_start = GetTickCount();
             BCryptGenRandom(NULL, N.nh, 16, BCRYPT_USE_SYSTEM_PREFERRED_RNG);
             uint8_t m[20]; memcpy(m, "FCH1", 4); memcpy(m + 4, N.nh, 16);
             logf_("lsnet: connection from %s, authenticating", ip);
+            strncpy(N.cur_ip, ip, sizeof N.cur_ip - 1);
             if (!lsn_send_raw(m, sizeof m)) return;
             N.hs_state = 1;
         } else {

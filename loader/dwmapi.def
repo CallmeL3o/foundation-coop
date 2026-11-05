@@ -1,0 +1,115 @@
+LIBRARY dwmapi
+EXPORTS
+    DwmpDxGetWindowSharedSurface = fwd_100 @100
+    DwmpDxUpdateWindowSharedSurface = fwd_101 @101
+    DwmEnableComposition = fwd_102 @102
+    fwd_103 @103 NONAME
+    fwd_104 @104 NONAME
+    fwd_105 @105 NONAME
+    fwd_106 @106 NONAME
+    fwd_107 @107 NONAME
+    fwd_108 @108 NONAME
+    fwd_109 @109 NONAME
+    fwd_110 @110 NONAME
+    DllCanUnloadNow = fwd_111 @111
+    fwd_112 @112 NONAME
+    fwd_113 @113 NONAME
+    fwd_114 @114 NONAME
+    DllGetClassObject = fwd_115 @115
+    DwmAttachMilContent = fwd_116 @116
+    DwmDefWindowProc = fwd_117 @117
+    DwmDetachMilContent = fwd_118 @118
+    DwmEnableBlurBehindWindow = fwd_119 @119
+    DwmEnableMMCSS = fwd_120 @120
+    DwmExtendFrameIntoClientArea = fwd_121 @121
+    DwmFlush = fwd_122 @122
+    DwmGetColorizationColor = fwd_123 @123
+    fwd_124 @124 NONAME
+    DwmGetCompositionTimingInfo = fwd_125 @125
+    DwmGetGraphicsStreamClient = fwd_126 @126
+    DwmpGetColorizationParameters = fwd_127 @127
+    DwmpDxgiIsThreadDesktopComposited = fwd_128 @128
+    DwmGetGraphicsStreamTransformHint = fwd_129 @129
+    DwmGetTransportAttributes = fwd_130 @130
+    DwmpSetColorizationParameters = fwd_131 @131
+    fwd_132 @132 NONAME
+    DwmGetUnmetTabRequirements = fwd_133 @133
+    DwmGetWindowAttribute = fwd_134 @134
+    DwmpRenderFlick = fwd_135 @135
+    DwmpAllocateSecurityDescriptor = fwd_136 @136
+    DwmpFreeSecurityDescriptor = fwd_137 @137
+    fwd_138 @138 NONAME
+    fwd_139 @139 NONAME
+    fwd_140 @140 NONAME
+    fwd_141 @141 NONAME
+    fwd_142 @142 NONAME
+    DwmpEnableDDASupport = fwd_143 @143
+    fwd_144 @144 NONAME
+    fwd_145 @145 NONAME
+    DwmInvalidateIconicBitmaps = fwd_146 @146
+    fwd_147 @147 NONAME
+    fwd_148 @148 NONAME
+    DwmIsCompositionEnabled = fwd_149 @149
+    fwd_150 @150 NONAME
+    fwd_151 @151 NONAME
+    fwd_152 @152 NONAME
+    fwd_153 @153 NONAME
+    fwd_154 @154 NONAME
+    fwd_155 @155 NONAME
+    DwmTetherTextContact = fwd_156 @156
+    fwd_157 @157 NONAME
+    fwd_158 @158 NONAME
+    fwd_159 @159 NONAME
+    fwd_160 @160 NONAME
+    fwd_161 @161 NONAME
+    fwd_162 @162 NONAME
+    fwd_163 @163 NONAME
+    fwd_164 @164 NONAME
+    fwd_165 @165 NONAME
+    fwd_166 @166 NONAME
+    fwd_167 @167 NONAME
+    fwd_168 @168 NONAME
+    fwd_169 @169 NONAME
+    fwd_170 @170 NONAME
+    fwd_171 @171 NONAME
+    fwd_172 @172 NONAME
+    fwd_173 @173 NONAME
+    fwd_174 @174 NONAME
+    fwd_175 @175 NONAME
+    fwd_176 @176 NONAME
+    fwd_177 @177 NONAME
+    fwd_178 @178 NONAME
+    fwd_179 @179 NONAME
+    fwd_180 @180 NONAME
+    fwd_181 @181 NONAME
+    fwd_182 @182 NONAME
+    DwmpUpdateProxyWindowForCapture = fwd_183 @183
+    fwd_184 @184 NONAME
+    fwd_185 @185 NONAME
+    fwd_186 @186 NONAME
+    fwd_187 @187 NONAME
+    fwd_188 @188 NONAME
+    fwd_189 @189 NONAME
+    fwd_190 @190 NONAME
+    fwd_191 @191 NONAME
+    fwd_192 @192 NONAME
+    fwd_193 @193 NONAME
+    fwd_194 @194 NONAME
+    fwd_195 @195 NONAME
+    fwd_196 @196 NONAME
+    fwd_197 @197 NONAME
+    fwd_198 @198 NONAME
+    DwmModifyPreviousDxFrameDuration = fwd_199 @199
+    DwmQueryThumbnailSourceSize = fwd_200 @200
+    DwmRegisterThumbnail = fwd_201 @201
+    DwmRenderGesture = fwd_202 @202
+    DwmSetDxFrameDuration = fwd_203 @203
+    DwmSetIconicLivePreviewBitmap = fwd_204 @204
+    DwmSetIconicThumbnail = fwd_205 @205
+    DwmSetPresentParameters = fwd_206 @206
+    DwmSetWindowAttribute = fwd_207 @207
+    DwmShowContact = fwd_208 @208
+    DwmTetherContact = fwd_209 @209
+    DwmTransitionOwnedWindow = fwd_210 @210
+    DwmUnregisterThumbnail = fwd_211 @211
+    DwmUpdateThumbnailProperties = fwd_212 @212
