@@ -1,0 +1,8 @@
+build/
+*.bak*
+*.log
+*.dmp
+*.foundation
+coop_key.txt
+lockstep_go
+pid.txt
