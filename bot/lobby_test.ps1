@@ -2,7 +2,7 @@
 # loader (dwmapi.dll in the game copy, no injection); the host's save goes to the client over the network; both load
 # it; the lobby starts lockstep by itself; then play, pause, quicksave both and compare with savediff.py.
 # Localhost only (FCOOP_LS_BIND=127.0.0.1). Profiles: <kit2>\instance-host / instance-client, seeded with settings only.
-param([int]$RunSeconds = 60, [string]$ExtraSteps = "")
+param([int]$RunSeconds = 60, [string]$ExtraSteps = "", [string]$Addr = "127.0.0.1")   # -Addr steam: Steam transport
 $ErrorActionPreference = "Stop"
 $bot = $PSScriptRoot
 $ui = Join-Path $bot "ui.ps1"
@@ -42,7 +42,7 @@ function LoadNewest($id) {
 }
 $before = @(Get-Process foundation -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
 Remove-Item "$kit\last_code.txt" -ErrorAction SilentlyContinue
-$p = [Diagnostics.Process]::Start("$kit\FoundationCoop.exe", "--host E:\FoundationCoopTest\saves\coop-start.foundation --addr 127.0.0.1 --game $game"); $p.WaitForExit()   # not Start-Process -Wait: that also waits for the game
+$p = [Diagnostics.Process]::Start("$kit\FoundationCoop.exe", "--host E:\FoundationCoopTest\saves\coop-start.foundation --addr $Addr --game $game"); $p.WaitForExit()   # not Start-Process -Wait: that also waits for the game
 if ($p.ExitCode -ne 0) { throw "launcher --host exit $($p.ExitCode)" }
 $code = Get-Content "$kit\last_code.txt" -Raw
 "join code: $code"

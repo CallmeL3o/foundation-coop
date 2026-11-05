@@ -253,6 +253,7 @@ static void fill_addresses(void) {
         }
     }
     free(aa);
+    SendMessageW(g_addr, CB_ADDSTRING, 0, (LPARAM)L"Steam   (recommended: works over the internet, no VPN, no port setup)");
     for (int r = 0; r <= 3; r++) for (int i = 0; i < n; i++) if (items[i].rank == r) SendMessageW(g_addr, CB_ADDSTRING, 0, (LPARAM)items[i].label);
     SendMessageW(g_addr, CB_SETCURSEL, 0, 0);
 }
@@ -299,6 +300,13 @@ static int steam_running(void) {
     for (BOOL ok = Process32FirstW(s, &pe); ok; ok = Process32NextW(s, &pe)) if (!_wcsicmp(pe.szExeFile, L"steam.exe")) { found = 1; break; }
     CloseHandle(s); return found;
 }
+// SteamID64 of the account logged in to the running Steam client (0 if none)
+static uint64_t steam_user(void) {
+    DWORD v = 0, n = sizeof v;
+    if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Valve\\Steam\\ActiveProcess", L"ActiveUser", RRF_RT_REG_DWORD, NULL, &v, &n) != ERROR_SUCCESS || !v) return 0;
+    return 76561197960265728ull + v;
+}
+static uint64_t g_steam_host;          // client in Steam mode: the host's SteamID; host in Steam mode: 1
 static int start_game(int host, const char *ip, int port) {
     wchar_t exe[MAX_PATH], coop[MAX_PATH], ws[64], st[MAX_PATH];
     path_join(exe, g_game, L"foundation.exe"); path_join(coop, g_kit, L"coop.dll");
@@ -310,6 +318,9 @@ static int start_game(int host, const char *ip, int port) {
     SetEnvironmentVariableW(L"FCOOP_COOP_DLL", coop);
     SetEnvironmentVariableW(L"FCOOP_ROLE", host ? L"host" : L"client");
     swprintf(ws, 64, L"%d", port); SetEnvironmentVariableW(L"FCOOP_LS_PORT", ws);
+    SetEnvironmentVariableW(L"FCOOP_NET", g_steam_host ? L"steam" : NULL);
+    SetEnvironmentVariableW(L"FCOOP_STEAM_HOST", NULL);
+    if (g_steam_host && !host) { swprintf(ws, 64, L"%llu", (unsigned long long)g_steam_host); SetEnvironmentVariableW(L"FCOOP_STEAM_HOST", ws); }
     if (host) {
         if (!GetEnvironmentVariableW(L"FCOOP_LS_BIND", ws, 64)) SetEnvironmentVariableW(L"FCOOP_LS_BIND", L"0.0.0.0");   // tests: 127.0.0.1
         SetEnvironmentVariableW(L"FCOOP_LS_ALLOW", L"*");
@@ -333,43 +344,63 @@ static int precheck(void) {
     return 1;
 }
 
-static void do_host(void) {
-    if (!precheck()) return;
-    if (!g_save[0]) { status(L"Choose a city save first (\"Choose city save...\")."); return; }
-    char ip[64] = ""; wchar_t sel[256]; GetWindowTextW(g_addr, sel, 256);
+// join codes: v1 (24 bytes) {1, IPv4, port BE, secret16, check}; v2 (26 bytes) {2, SteamID64 LE, secret16, check}
+static int do_host_sel(const wchar_t *sel) {
+    if (!precheck()) return 0;
+    if (!g_save[0]) { status(L"Choose a city save first (\"Choose city save...\")."); return 0; }
+    char ip[64] = "";
     WideCharToMultiByte(CP_UTF8, 0, sel, -1, ip, sizeof ip, NULL, NULL);
     char *sp = strchr(ip, ' '); if (sp) *sp = 0;
-    struct in_addr ia;
-    if (inet_pton(AF_INET, ip, &ia) != 1) { status(L"\"%ls\" is not an IPv4 address.", sel); return; }
+    struct in_addr ia; uint64_t me = 0;
+    if (!_stricmp(ip, "steam")) {
+        me = steam_user();
+        if (!me) { status(L"No Steam account found. Start Steam and log in, then try again."); return 0; }
+    } else if (inet_pton(AF_INET, ip, &ia) != 1) { status(L"\"%ls\" is not an IPv4 address.", sel); return 0; }
     path_join(g_inst, g_kit, L"instance-host"); mkdirs(g_inst);
     // copy the chosen save into the co-op profile (the original file is only read)
     wchar_t dir[MAX_PATH], dst[MAX_PATH];
     path_join(dir, g_inst, L"Documents\\Polymorph Games\\Foundation\\Save Game\\COOP"); mkdirs(dir);
     path_join(dst, dir, L"coop-session.foundation");
-    if (!CopyFileW(g_save, dst, FALSE)) { status(L"Could not copy the save (error %lu).", GetLastError()); return; }
+    if (!CopyFileW(g_save, dst, FALSE)) { status(L"Could not copy the save (error %lu).", GetLastError()); return 0; }
     { HANDLE f = CreateFileW(dst, FILE_WRITE_ATTRIBUTES, 0, NULL, OPEN_EXISTING, 0, NULL);   // newest save in the list
       if (f != INVALID_HANDLE_VALUE) { FILETIME now; GetSystemTimeAsFileTime(&now); SetFileTime(f, NULL, NULL, &now); CloseHandle(f); } }
-    uint8_t c[24] = {0}, secret[16];
+    uint8_t c[26] = {0}, secret[16]; int clen;
     BCryptGenRandom(NULL, secret, 16, BCRYPT_USE_SYSTEM_PREFERRED_RNG);
-    c[0] = 1; memcpy(c + 1, &ia, 4); c[5] = DEFAULT_PORT >> 8; c[6] = DEFAULT_PORT & 255; memcpy(c + 7, secret, 16);
-    c[23] = check_byte(c, 23);
-    if (!write_key(g_inst, secret)) { status(L"Could not write the session key."); return; }
-    char code[80]; code_encode(c, 24, code);
+    if (me) { c[0] = 2; memcpy(c + 1, &me, 8); memcpy(c + 9, secret, 16); clen = 26; }
+    else { c[0] = 1; memcpy(c + 1, &ia, 4); c[5] = DEFAULT_PORT >> 8; c[6] = DEFAULT_PORT & 255; memcpy(c + 7, secret, 16); clen = 24; }
+    c[clen - 1] = check_byte(c, clen - 1);
+    if (!write_key(g_inst, secret)) { status(L"Could not write the session key."); return 0; }
+    char code[96]; code_encode(c, clen, code);
     wcscpy(g_save, dst);
-    if (!start_game(1, ip, DEFAULT_PORT)) return;
-    wchar_t wc[80]; MultiByteToWideChar(CP_UTF8, 0, code, -1, wc, 80);
-    if (g_cli) { wchar_t p[MAX_PATH]; path_join(p, g_kit, L"last_code.txt"); FILE *f = _wfopen(p, L"wb"); if (f) { fputs(code, f); fclose(f); } return; }
+    g_steam_host = me ? 1 : 0;
+    if (!start_game(1, ip, DEFAULT_PORT)) return 0;
+    wchar_t wc[96]; MultiByteToWideChar(CP_UTF8, 0, code, -1, wc, 96);
+    if (g_cli) { wchar_t p[MAX_PATH]; path_join(p, g_kit, L"last_code.txt"); FILE *f = _wfopen(p, L"wb"); if (f) { fputs(code, f); fclose(f); } return 1; }
     SetWindowTextW(g_code_out, wc);
-    status(L"Game starting. Send the join code to your friend PRIVATELY (anyone with it can join).\nWindows may ask whether foundation.exe may use the network: allow it.");
+    if (me) status(L"Game starting. Send the join code to your friend PRIVATELY (anyone with it can join).\nThe connection goes through Steam: nothing else to set up.");
+    else status(L"Game starting. Send the join code to your friend PRIVATELY (anyone with it can join).\nWindows may ask whether foundation.exe may use the network: allow it.");
+    return 1;
 }
+static void do_host(void) { wchar_t sel[256]; GetWindowTextW(g_addr, sel, 256); do_host_sel(sel); }
 
 static void do_join(const wchar_t *codew) {
     if (!precheck()) return;
-    uint8_t c[24];
+    uint8_t c[26];
+    path_join(g_inst, g_kit, L"instance-client");
+    if (code_decode(codew, c, 26) && c[0] == 2 && check_byte(c, 25) == c[25]) {
+        memcpy(&g_steam_host, c + 1, 8);
+        if (g_steam_host == steam_user()) status(L"Note: this code is from your own Steam account. Steam cannot connect an account to itself; the friend must join from their account.");
+        mkdirs(g_inst);
+        if (!write_key(g_inst, c + 9)) { status(L"Could not write the session key."); return; }
+        if (!start_game(0, "", DEFAULT_PORT)) return;
+        status(L"Game starting, connecting to the host through Steam ...");
+        return;
+    }
     if (!code_decode(codew, c, 24) || c[0] != 1 || check_byte(c, 23) != c[23]) { status(L"That join code is not valid. Copy the whole code again (it starts with FC-)."); return; }
+    g_steam_host = 0;
     char ip[32]; inet_ntop(AF_INET, c + 1, ip, sizeof ip);
     int port = (c[5] << 8) | c[6];
-    path_join(g_inst, g_kit, L"instance-client"); mkdirs(g_inst);
+    mkdirs(g_inst);
     if (!write_key(g_inst, c + 7)) { status(L"Could not write the session key."); return; }
     if (!start_game(0, ip, port)) return;
     status(L"Game starting, connecting to %hs ...", ip);
@@ -513,26 +544,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE prev, PWSTR cmdline, int show) {
         if (a_host) {
             wcsncpy(g_save, a_host, MAX_PATH - 1);
             g_addr = NULL;
-            // reuse do_host with the address from the command line
-            static wchar_t addrbuf[64]; wcsncpy(addrbuf, a_addr ? a_addr : L"127.0.0.1", 63);
-            char ip[64]; WideCharToMultiByte(CP_UTF8, 0, addrbuf, -1, ip, sizeof ip, NULL, NULL);
-            struct in_addr ia; if (inet_pton(AF_INET, ip, &ia) != 1) return 3;
-            path_join(g_inst, g_kit, L"instance-host"); mkdirs(g_inst);
-            wchar_t dir[MAX_PATH], dst[MAX_PATH];
-            path_join(dir, g_inst, L"Documents\\Polymorph Games\\Foundation\\Save Game\\COOP"); mkdirs(dir);
-            path_join(dst, dir, L"coop-session.foundation");
-            if (!CopyFileW(g_save, dst, FALSE)) return 4;
-            uint8_t c[24] = {0}, secret[16];
-            BCryptGenRandom(NULL, secret, 16, BCRYPT_USE_SYSTEM_PREFERRED_RNG);
-            c[0] = 1; memcpy(c + 1, &ia, 4); c[5] = DEFAULT_PORT >> 8; c[6] = DEFAULT_PORT & 255; memcpy(c + 7, secret, 16);
-            c[23] = check_byte(c, 23);
-            write_key(g_inst, secret);
-            char code[80]; code_encode(c, 24, code);
-            wcscpy(g_save, dst);
-            if (!start_game(1, ip, DEFAULT_PORT)) return 5;
-            wchar_t p[MAX_PATH]; path_join(p, g_kit, L"last_code.txt");
-            FILE *f = _wfopen(p, L"wb"); if (f) { fputs(code, f); fclose(f); }
-            return 0;
+            return do_host_sel(a_addr ? a_addr : L"127.0.0.1") ? 0 : 5;   // --addr <ip> or --addr steam
         }
         do_join(a_join);
         return g_proc ? 0 : 6;

@@ -9,7 +9,8 @@ What you need (both players)
 - Foundation on Steam, version 1.12.0.16. Steam must be running.
 - This folder, unpacked (for example D:\FoundationCoop).
 - About 4 GB free disk space for a copy of the game.
-- A way to reach each other: the same home network, or Tailscale (free, tailscale.com) over the internet.
+- Nothing else: the connection goes through Steam (no VPN, no port forwarding).
+  Each player uses their own Steam account (two different accounts).
 
 First time
 ----------
@@ -22,10 +23,11 @@ First time
 Host (shares the city)
 ----------------------
 1. "Choose city save..." and pick the city you want to play together.
-2. Pick your address (Tailscale address 100.x.x.x for the internet, or your home network).
+2. Connection: keep "Steam" (recommended). The other entries (home network / Tailscale
+   addresses) are a fallback if Steam does not work for you.
 3. "Start hosting". The game starts. Click "Copy" and send the join code to your friend
    PRIVATELY (anyone with the code can join).
-   Windows may ask whether foundation.exe may use the network: allow it.
+   Only with the fallback: Windows may ask whether foundation.exe may use the network: allow it.
 4. In the game: Load Game, pick the newest save (at the top). Keep it PAUSED.
    The status line in the launcher tells you what is happening.
 5. When the status says "Playing together", unpause. Have fun!

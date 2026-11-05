@@ -24,7 +24,10 @@ Deterministic lockstep on top of the engine's own replay system:
 - Simulation work the engine hands to its thread pool inside a frame (navmesh, residential lots, desirability,
   resource containers) runs inline so it finishes at the same frame on both machines.
 - One TCP connection, pre-shared key, HMAC-SHA256 per message (`native/lsnet.h`). The key comes from the join
-  code; the host accepts the first peer that proves the key and then locks to that IP.
+  code; the host accepts the first peer that proves the key and then locks to that IP (or SteamID).
+- **Steam transport (default in the launcher):** the same authenticated byte stream goes over Steam's relay network
+  (ISteamNetworkingMessages from the game's own `steam_api64.dll`): no VPN, no port forwarding. The join code then
+  carries the host's SteamID instead of an IP. TCP (home network / Tailscale) remains as a fallback.
 - **Lobby (v2):** the host sends its city save to the client over the same connection; when both have loaded it, the
   game starts in lockstep by itself. Player commands are held back until then.
 
@@ -64,7 +67,8 @@ the same save. `bot/holdtest.ps1 -Step <step.ps1>` runs a scenario and compares 
 field (`savediff.py`, ~1.9 million fields). Results so far: identical after 27 in-game days with both players
 painting zones, both players building, cancelling previews, moving cameras, and through the player kit.
 `bot/lobby_test.ps1` tests the v2 flow end to end (join code, save transfer, automatic start, play, savediff):
-identical after 60 s and 120 s runs.
+identical after 60 s and 120 s runs. `-Addr steam` uses the Steam transport; on one PC both games share one Steam
+account, so only startup and relay readiness can be checked there (Steam does not connect an account to itself).
 
 ## Known issues
 
