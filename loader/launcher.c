@@ -22,7 +22,7 @@
 #include <stdint.h>
 #include <wchar.h>
 
-#define GAME_SHA256 L"576845171FF3F6E44F1F8C5F231691D732768D3398C0A0DCA8734B42E5252B49"
+#define GAME_SHA256 L"485003D4B4ED4408927FA41C6300C2D74D2F6ABAC4CD0896AEB17CC735277A7E"
 #define DEFAULT_PORT 27810
 #define B32 "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
@@ -150,7 +150,7 @@ static void check_game(void) {
     CopyFileW(src, dst, FALSE);
     g_game_ok = _wcsicmp(hex, GAME_SHA256) == 0 ? 1 : 2;
     if (g_game_ok == 1) set_text(g_game_lbl, L"Game copy: %ls  (version OK)", g_game);
-    else set_text(g_game_lbl, L"Game copy: %ls\nWRONG GAME VERSION: this kit needs Foundation 1.12.0.16. Update Steam, then set up the copy again.", g_game);
+    else set_text(g_game_lbl, L"Game copy: %ls\nWRONG GAME VERSION: this kit needs Foundation 1.12.0.18. Update Steam, then set up the copy again.", g_game);
 }
 
 struct copy_job { wchar_t src[MAX_PATH], dst[MAX_PATH]; ULONGLONG total, done; };

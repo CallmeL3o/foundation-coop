@@ -6,7 +6,7 @@ profile folders (instance-host / instance-client next to this file).
 
 What you need (both players)
 ----------------------------
-- Foundation on Steam, version 1.12.0.16. Steam must be running.
+- Foundation on Steam, version 1.12.0.18. Steam must be running.
 - This folder, unpacked (for example D:\FoundationCoop).
 - About 4 GB free disk space for a copy of the game.
 - Nothing else: the connection goes through Steam (no VPN, no port forwarding).
@@ -48,6 +48,10 @@ Tips and limits
 - If the cities look different: the host saves the game (Ctrl+S) and starts a new session with
   that save.
 - Problems: click "Open co-op folder" and send coop.log (and the newest quicksave) to the host.
+- The game is extremely slow for BOTH players: both games run in step, so the slower PC sets the
+  pace. On the slow PC open Device Manager > Display adapters. "Microsoft Basic Display Adapter"
+  means there is no graphics driver: install the AMD / NVIDIA / Intel driver and restart.
+  Normal Foundation (without co-op) should run smoothly before you try co-op.
 
 Files
 -----

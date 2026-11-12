@@ -2,12 +2,11 @@
 # loader (dwmapi.dll in the game copy, no injection); the host's save goes to the client over the network; both load
 # it; the lobby starts lockstep by itself; then play, pause, quicksave both and compare with savediff.py.
 # Localhost only (FCOOP_LS_BIND=127.0.0.1). Profiles: <kit2>\instance-host / instance-client, seeded with settings only.
-param([int]$RunSeconds = 60, [string]$ExtraSteps = "", [string]$Addr = "127.0.0.1")   # -Addr steam: Steam transport
+param([int]$RunSeconds = 60, [string]$ExtraSteps = "", [string]$Addr = "127.0.0.1", [string]$Game = "E:\FoundationCoopTest\game")   # -Addr steam: Steam transport
 $ErrorActionPreference = "Stop"
 $bot = $PSScriptRoot
 $ui = Join-Path $bot "ui.ps1"
 $kit = "E:\FoundationCoopTest\kit2"
-$game = "E:\FoundationCoopTest\game"
 $src = Split-Path $bot
 Remove-Item Env:FCOOP_DEV -ErrorAction SilentlyContinue
 $env:FCOOP_LS_BIND = "127.0.0.1"

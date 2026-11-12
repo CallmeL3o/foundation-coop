@@ -1,4 +1,4 @@
-// coop.dll: test-only native co-op layer for Foundation build 26138506 (foundation.exe 1.12.0.16).
+// coop.dll: test-only native co-op layer for Foundation build 26490738 (foundation.exe 1.12.0.18; addresses ported from 1.12.0.17 / 1.12.0.16).
 // Step A: hook GamCGame::updateFrame and log per frame: frame number, dt, RNG seed, queued player commands.
 // Loaded by launch.exe (APC before the exe's entry point). Does nothing unless FCOOP_INSTANCE_DIR is set
 // and the code bytes at the hook site match this build.
@@ -11,9 +11,9 @@
 #include <wchar.h>
 
 // ---- build-specific addresses (RVA = VA - 0x140000000), from Ghidra on build 26138506 -------------
-#define RVA_UPDATE_FRAME      0x1c2bf0u   // void GamCGame::updateFrame(GamCGame*, float dt, uint32_t)
-#define RVA_FRAME_COUNTER     0x3fcff48u  // int, incremented at the end of updateFrame
-#define RVA_COMP_REGISTRY     0x3fd4e28u  // ComCRefManager<GamCComponent>: vector of 16-byte slots {int gen; pad; ptr}
+#define RVA_UPDATE_FRAME      0x1c2c50u   // void GamCGame::updateFrame(GamCGame*, float dt, uint32_t)
+#define RVA_FRAME_COUNTER     0x3fec048u  // int, incremented at the end of updateFrame
+#define RVA_COMP_REGISTRY     0x3ff0ed0u  // ComCRefManager<GamCComponent>: vector of 16-byte slots {int gen; pad; ptr}
 static const uint8_t EXPECT_UPDATE_FRAME[15] = { 0x48,0x89,0x5c,0x24,0x10, 0x48,0x89,0x74,0x24,0x18, 0x57, 0x48,0x83,0xec,0x70 };
 // GamCGame field offsets
 #define G_REPLAY_MODE   0x3d8   // int
@@ -24,10 +24,10 @@ static const uint8_t EXPECT_UPDATE_FRAME[15] = { 0x48,0x89,0x5c,0x24,0x10, 0x48,
 #define G_CMD_TAIL      0x400
 
 // engine functions used for command transport (step B)
-#define RVA_PUSH_PLAYER_COMMAND 0x1b3210u  // void pushPlayerCommand(GamCGame*, GamIPlayerCommand*)
-#define RVA_READ_COMMAND        0x294bf0u  // GamIPlayerCommand* readCommand(GamCReplayFrame*, world, reader_holder*)
-#define RVA_BIN_WRITER_CTOR     0x126b20u  // ComCBinarySerializerWriter* ctor(mem[0x70], char)
-#define RVA_BIN_READER_CTOR     0x126a20u  // ComCBinarySerializerReader* ctor(mem[0x58])
+#define RVA_PUSH_PLAYER_COMMAND 0x1b3270u  // void pushPlayerCommand(GamCGame*, GamIPlayerCommand*)
+#define RVA_READ_COMMAND        0x2944f0u  // GamIPlayerCommand* readCommand(GamCReplayFrame*, world, reader_holder*)
+#define RVA_BIN_WRITER_CTOR     0x126b80u  // ComCBinarySerializerWriter* ctor(mem[0x70], char)
+#define RVA_BIN_READER_CTOR     0x126a80u  // ComCBinarySerializerReader* ctor(mem[0x58])
 #define G_REPLAY        0x3c8   // replay object pointer: updateFrame calls the recorder for every executed command when non-null
 #define G_WORLD         0x1d0
 #define R_WRITER_HOLDER 0x30    // replay: pointer to { writer* }
@@ -40,7 +40,7 @@ static const uint8_t EXPECT_UPDATE_FRAME[15] = { 0x48,0x89,0x5c,0x24,0x10, 0x48,
 #define READER_LOAD_SLOT      5 // bool loadFromBuffer(reader, const void*, size_t)
 #define READER_FIND_SLOT     12 // +0x60: find(reader, out[2], nodeId, key*, type)  (as used by readCommand)
 #define READER_READSTR_SLOT  31 // +0xf8: bool readString(reader, handle, out*)
-#define RVA_KEY_TYPENAME 0x3fd28b0u // global key object used for the command type-name attribute
+#define RVA_KEY_TYPENAME 0x3fee538u // global key object used for the command type-name attribute
 
 typedef void (*update_frame_fn)(void *game, float dt, uint32_t arg3);
 typedef void (*push_cmd_fn)(void *game, void *cmd);
@@ -219,7 +219,7 @@ static int g_ui_depth;      // >0 while a replicated UI call is applied (no capt
 #define EV_XF_MATRIX_SIZE (24 + 64)
 // the engine's second global random generator: 64-bit LCG, state at 0x143fce520 (FUN_140163e10, 254 callers, e.g. the
 // house lot seed in FUN_141315040). Synced like the game seed: host state at frame start goes with the frame.
-#define RVA_GLOBAL_RNG 0x3fce520u
+#define RVA_GLOBAL_RNG 0x3fea620u
 static uint64_t g_grng0, g_ls_expect_grng1; static int g_ls_grng_desyncs;
 // Other threads draw from the same global while the frame runs, so the simulation thread gets its own copy:
 // next(state*) FUN_140163e10 and range(state*, n) FUN_1401633d0 are redirected to g_ls_grng for the global state.
@@ -314,8 +314,8 @@ static void ls_host_apply_deferred(void);
 // CRT rand()/srand() (~90 callers, among them house lot generation) keep per-process state that nothing syncs.
 // Inside the simulation frame on the simulation thread, rand() comes from a lockstep generator whose state the host
 // sends with every frame; srand() there is ignored. Everywhere else the real CRT functions run.
-#define IAT_RAND  0x2c67df0u
-#define IAT_SRAND 0x2c67e00u
+#define IAT_RAND  0x2c7bdf0u
+#define IAT_SRAND 0x2c7be00u
 typedef int (*rand_fn)(void);
 typedef void (*srand_fn)(unsigned);
 static rand_fn g_orig_rand; static srand_fn g_orig_srand;
@@ -334,8 +334,8 @@ static void hook_srand(unsigned seed) {
     g_orig_srand(seed);
 }
 // diagnostics: who draws OS randomness inside the frame (besides the GUID generator)
-#define IAT_BCRYPTGENRANDOM 0x2c67e18u
-#define IAT_CRYPTGENRANDOM  0x2c66048u
+#define IAT_BCRYPTGENRANDOM 0x2c7be18u
+#define IAT_CRYPTGENRANDOM  0x2c7a048u
 typedef LONG (WINAPI *bcgr_fn)(void *alg, unsigned char *buf, ULONG n, ULONG flags);
 typedef BOOL (WINAPI *cgr_fn)(ULONG_PTR prov, DWORD n, BYTE *buf);
 static bcgr_fn g_orig_bcgr; static cgr_fn g_orig_cgr;
@@ -365,18 +365,52 @@ static void patch_iat(uint32_t rva, void *hook, void **orig) {
 // "Heavy Algo" module). A job submitted by the simulation inside a frame would finish on a worker at a time that
 // differs per machine; in lockstep it runs right here instead (same inputs, same order, same frame on both sides).
 static void *hook_at(uint32_t rva, const uint8_t *expect, size_t len, void *hook, const char *name);
-#define RVA_JOB_PUSH 0x1f8c40u
+#define RVA_JOB_PUSH 0x1f85b0u
 static const uint8_t EXPECT_JOB_PUSH[15] = { 0x48,0x89,0x5c,0x24,0x08, 0x48,0x89,0x6c,0x24,0x10, 0x48,0x89,0x74,0x24,0x18 };
 typedef void (*job_push_fn)(void *queue, void *fn);
 static job_push_fn g_orig_job_push;
 static uint64_t g_jobs_inline;
+static int g_inline_depth;   // > 0 while a worker job runs inline on the simulation thread
+// Thread-affinity check (FUN_140157dd0(threadObj): *threadObj->handle == currentThread()). Navmesh/desirability code
+// asserts with it ("can only be called from navmesh thread") and logs an error every frame when one of its jobs runs
+// inline. The check is also used to choose code paths (189 call sites), so it may only pass at the 58 sites that
+// are pure asserts: "test al,al; jne skip" followed by the "Function %s can only be called from ... thread" format
+// string. Passing it everywhere crashed the game at the first house (tested).
+// The whole 30-byte function is replaced (it calls FUN_140162920, the engine's current-thread getter).
+static const uint32_t ASSERT_FMT_RVA[3] = { 0x2cf72a0u, 0x2d8a680u, 0x2d8cc98u };
+static int is_thread_assert_site(const uint8_t *ra) {
+    static const uint8_t *cache_ra[128]; static char cache_v[128]; static int nc;
+    for (int i = 0; i < nc; i++) if (cache_ra[i] == ra) return cache_v[i];
+    int v = 0;
+    if (ra[0] == 0x84 && ra[1] == 0xc0 && (ra[2] == 0x75 || (ra[2] == 0x0f && ra[3] == 0x85))) {
+        for (int k = 0; k < 72 && !v; k++) {
+            const uint8_t *p = ra + k;
+            if ((p[0] == 0x48 || p[0] == 0x4c) && p[1] == 0x8d && (p[2] & 0xc7) == 0x05) {
+                uintptr_t t = (uintptr_t)(p + 7 + *(const int32_t *)(p + 3)) - (uintptr_t)g_base;
+                for (int j = 0; j < 3; j++) if (t == ASSERT_FMT_RVA[j]) v = 1;
+            }
+        }
+    }
+    if (nc < 128) { cache_ra[nc] = ra; cache_v[nc] = (char)v; nc++; }
+    return v;
+}
+#define RVA_THREAD_CHECK 0x157e30u
+#define RVA_CUR_THREAD   0x162980u
+static const uint8_t EXPECT_THREAD_CHECK[30] = { 0x40,0x53, 0x48,0x83,0xec,0x20, 0x48,0x8b,0x41,0x10, 0x48,0x8b,0x18,
+    0xe8,0x3e,0xab,0x00,0x00, 0x48,0x3b,0xc3, 0x0f,0x94,0xc0, 0x48,0x83,0xc4,0x20, 0x5b, 0xc3 };
+static char hook_thread_check(void *threadObj) {
+    if (g_inline_depth > 0 && GetCurrentThreadId() == g_sim_tid &&
+        is_thread_assert_site((const uint8_t *)__builtin_return_address(0))) return 1;
+    int64_t want = **(int64_t **)((uint8_t *)threadObj + 0x10);
+    return ((int64_t (*)(void))(g_base + RVA_CUR_THREAD))() == want;
+}
 static void hook_job_push(void *queue, void *fn) {
     // only simulation jobs (navigation mesh / zone processing, 0x1407b0000-0x140800000); render jobs must stay on the pool
     uintptr_t ra = (uintptr_t)__builtin_return_address(0) - (uintptr_t)g_base;
     // navmesh/zone processing 0x1407b0000-0x140800000; desirability grid / residential / lots 0x1412e0000-0x141350000
     // resource containers 0x140b00000-0x140b20000; game-object jobs 0x140fa0000-0x140ff0000
-    int sim_job = (ra >= 0x7b0000 && ra < 0x800000) || (ra >= 0x12e0000 && ra < 0x1350000) ||
-                  (ra >= 0xb00000 && ra < 0xb20000) || (ra >= 0xfa0000 && ra < 0xff0000);
+    int sim_job = (ra >= 0x7b1b30 && ra < 0x801c90) || (ra >= 0x12e4b80 && ra < 0x1354b80) ||
+                  (ra >= 0xb02490 && ra < 0xb22400) || (ra >= 0xfa2940 && ra < 0xff2940);
     if (g_ls_go && g_in_frame && GetCurrentThreadId() == g_sim_tid && fn && !sim_job) {
         static uintptr_t seen[32]; static int ns; int known = 0;
         for (int i = 0; i < ns; i++) if (seen[i] == ra) known = 1;
@@ -391,14 +425,16 @@ static void hook_job_push(void *queue, void *fn) {
                       n > 1 ? (unsigned long long)((uint8_t *)bt[1] - g_base) : 0ull);
             }
             g_jobs_inline++;
+            g_inline_depth++;
             ((void (*)(void *))(*(void ***)impl)[2])(impl);
+            g_inline_depth--;
             return;
         }
     }
     g_orig_job_push(queue, fn);
 }
 // diagnostics: PlaILotConstructor::build(ctor, flag, lotdata) - dump both objects to find where the lot seed lives
-#define RVA_LOT_BUILD 0x12fdc50u
+#define RVA_LOT_BUILD 0x13027d0u
 static const uint8_t EXPECT_LOT_BUILD[14] = { 0x48,0x89,0x5c,0x24,0x10, 0x55, 0x56, 0x57, 0x41,0x54, 0x41,0x55, 0x41,0x56 };
 typedef void (*lot_build_fn)(void *ctor, char flag, void *data);
 static lot_build_fn g_orig_lot_build;
@@ -416,8 +452,8 @@ static void hook_lot_build(void *ctor, char flag, void *data) {
         n++;
     }
 }
-#define RVA_GRNG_NEXT  0x163e10u
-#define RVA_GRNG_RANGE 0x1633d0u
+#define RVA_GRNG_NEXT  0x163e70u
+#define RVA_GRNG_RANGE 0x163430u
 static const uint8_t EXPECT_GRNG_NEXT[17]  = { 0x48,0x8b,0x01, 0x48,0xba,0x65,0x89,0x07,0x6c,0x65,0x8b,0x58,0x5d, 0x48,0x0f,0xaf,0xc2 };
 static const uint8_t EXPECT_GRNG_RANGE[14] = { 0x48,0x89,0x5c,0x24,0x08, 0x55, 0x56, 0x57, 0x41,0x54, 0x41,0x55, 0x41,0x56 };
 typedef uint64_t (*grng_next_fn)(uint64_t *st);
@@ -431,13 +467,13 @@ static uint64_t hook_grng_next(uint64_t *st) { return g_orig_grng_next(grng_stat
 static uint32_t hook_grng_range(uint64_t *st, uint32_t n) { return g_orig_grng_range(grng_state(st), n); }
 // FUN_140279840: a pooled object spawner driven by real time (weights/timers): it runs inside the frame but at a
 // different frame on each machine, so everything it does is local (own GUIDs, real random generators).
-#define RVA_POOL_SPAWN 0x279840u
+#define RVA_POOL_SPAWN 0x279140u
 static const uint8_t EXPECT_POOL_SPAWN[15] = { 0x48,0x89,0x5c,0x24,0x10, 0x48,0x89,0x6c,0x24,0x18, 0x48,0x89,0x74,0x24,0x20 };
 typedef void (*pool_spawn_fn)(void *a, void *b);
 static pool_spawn_fn g_orig_pool_spawn;
 static void hook_pool_spawn(void *a, void *b) { g_local_depth++; g_orig_pool_spawn(a, b); g_local_depth--; }
 // diagnostics: who sets game object transforms (to find the build tool's preview moves)
-#define RVA_SET_GMATRIX 0x4cabc0u   // GameObject setGlobalMatrix(go, float m[16]) (setGlobalTransform builds the matrix)
+#define RVA_SET_GMATRIX 0x4cb680u   // GameObject setGlobalMatrix(go, float m[16]) (setGlobalTransform builds the matrix)
 static const uint8_t EXPECT_SET_GMATRIX[16] = { 0x48,0x8b,0xc4, 0x48,0x89,0x58,0x08, 0x48,0x89,0x78,0x10, 0x55, 0x48,0x8d,0x68,0xc8 };
 typedef void (*set_gmatrix_fn)(void *go, const float *m);
 static set_gmatrix_fn g_orig_set_gmatrix;
@@ -472,7 +508,7 @@ static void ls_client_send_event(const uint8_t *e, size_t len);
 static void ls_client_send_event_g(const uint8_t *e, const uint8_t *guids, uint32_t n);
 static void hook_set_gmatrix(void *go, const float *m) {
     uintptr_t ra = (uintptr_t)__builtin_return_address(0) - (uintptr_t)g_base;
-    int mover = (ra >= 0xc47070 && ra < 0xc471a7) || (ra >= 0xcbf4c0 && ra < 0xcc031e);
+    int mover = (ra >= 0xc47bf0 && ra < 0xc47d27) || (ra >= 0xcc0670 && ra < 0xcc14ce);
     if (mover && g_ls_go && g_in_frame && g_ui_depth == 0 && !g_local_depth && (g_ls_role == 1 || (g_ls_role == 2 && g_ls_started))) {
         uint8_t ev[EV_XF_MATRIX_SIZE] = {0};
         *(uint32_t *)ev = EV_XF_MATRIX; ev[23] = 1;
@@ -487,13 +523,13 @@ static void hook_set_gmatrix(void *go, const float *m) {
 }
 // PlaCCompBuilding::destroyBuilding(comp) FUN_140c85bd0 (diagnostics first: who destroys buildings, in or out of frame)
 static void hexguid(char *dst, const uint8_t g[16]);
-#define RVA_DESTROY_BUILDING 0xc85bd0u
+#define RVA_DESTROY_BUILDING 0xc86910u
 static const uint8_t EXPECT_DESTROY_BUILDING[15] = { 0x48,0x89,0x5c,0x24,0x10, 0x48,0x89,0x6c,0x24,0x18, 0x48,0x89,0x74,0x24,0x20 };
 typedef void (*destroy_building_fn)(void *comp);
 static destroy_building_fn g_orig_destroy_building;
 // The build tool cancelling a preview (FUN_140c86470 -> destroyBuilding, inside the frame, player's machine only)
 // is deferred to the shared frame boundary like the tool's setEditMode calls (event type 5 = destroy building).
-#define RA_TOOL_DESTROY 0xc86493u
+#define RA_TOOL_DESTROY 0xc871e3u
 static uint8_t g_defer[64][24]; static int g_ndefer;
 static void hook_destroy_building(void *comp) {
     uintptr_t ra = (uintptr_t)__builtin_return_address(0) - (uintptr_t)g_base;
@@ -518,6 +554,8 @@ static void install_rand_hooks(void) {
     g_orig_grng_range = (grng_range_fn)hook_at(RVA_GRNG_RANGE, EXPECT_GRNG_RANGE, sizeof EXPECT_GRNG_RANGE, (void *)hook_grng_range, "globalRngRange");
     if (g_dev) g_orig_lot_build = (lot_build_fn)hook_at(RVA_LOT_BUILD, EXPECT_LOT_BUILD, sizeof EXPECT_LOT_BUILD, (void *)hook_lot_build, "lotBuild");
     g_orig_job_push = (job_push_fn)hook_at(RVA_JOB_PUSH, EXPECT_JOB_PUSH, sizeof EXPECT_JOB_PUSH, (void *)hook_job_push, "jobPush");
+    if (g_orig_job_push)   // only meaningful together with the inline jobs; the trampoline is never used
+        hook_at(RVA_THREAD_CHECK, EXPECT_THREAD_CHECK, sizeof EXPECT_THREAD_CHECK, (void *)hook_thread_check, "threadCheck");
     if (g_dev) {
         patch_iat(IAT_BCRYPTGENRANDOM, (void *)hook_bcgr, (void **)&g_orig_bcgr);
         patch_iat(IAT_CRYPTGENRANDOM, (void *)hook_cgr, (void **)&g_orig_cgr);
@@ -646,7 +684,7 @@ static void write_abs_jmp(uint8_t *at, void *to) {
 static void *hook_at(uint32_t rva, const uint8_t *expect, size_t len, void *hook, const char *name) {
     uint8_t *site = g_base + rva;
     if (len < 14 || memcmp(site, expect, len) != 0) {
-        logf_("hook %s NOT installed: code bytes do not match build 26138506", name);
+        logf_("hook %s NOT installed: code bytes do not match build 26490738", name);
         return NULL;
     }
     uint8_t *tramp = VirtualAlloc(NULL, 64, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
@@ -664,10 +702,10 @@ static void *hook_at(uint32_t rva, const uint8_t *expect, size_t len, void *hook
 }
 
 // ---- object identity (step C): observe PlaCCompBuildingManager::createBuilding ---------------------------
-#define RVA_CREATE_BUILDING  0xc81540u   // COMP_BUILDING* createBuilding(manager, asset**, parentHandle*)
-#define RVA_ASSET_MANAGER    0x2186c0u   // asset manager singleton getter
-#define RVA_ASSET_BY_GUID    0x1a1a80u   // assetNode* find(assetManager, const guid[16]); asset object at node+0xf0
-#define RVA_COMP_REGISTRY    0x3fd4e28u  // ComCRefManager<GamCComponent>: vector of 16-byte slots {int gen; pad; ptr}
+#define RVA_CREATE_BUILDING  0xc821f0u   // COMP_BUILDING* createBuilding(manager, asset**, parentHandle*)
+#define RVA_ASSET_MANAGER    0x2180c0u   // asset manager singleton getter
+#define RVA_ASSET_BY_GUID    0x1a1ae0u   // assetNode* find(assetManager, const guid[16]); asset object at node+0xf0
+#define RVA_COMP_REGISTRY    0x3ff0ed0u  // ComCRefManager<GamCComponent>: vector of 16-byte slots {int gen; pad; ptr}
 static const uint8_t EXPECT_CREATE_BUILDING[15] = { 0x48,0x89,0x5c,0x24,0x08, 0x48,0x89,0x74,0x24,0x18, 0x48,0x89,0x7c,0x24,0x20 };
 typedef void *(*create_building_fn)(void *mgr, void **asset, void *parent);
 typedef void *(*noarg_fn)(void);
@@ -802,8 +840,8 @@ static void recv_create_building(const uint8_t asset_guid_[16]) {
 
 // receiver: object reference resolver hook (FUN_1402993e0(objReader, propertyNode, char *missing) -> handle).
 // While a peer command is being deserialized, GUIDs this process does not know are bound to buildings created for the peer.
-#define RVA_RESOLVE_REF   0x2993e0u
-#define RVA_KEY_VALUE     0x3fd2a00u   // key object of the GUID attribute
+#define RVA_RESOLVE_REF   0x298ce0u
+#define RVA_KEY_VALUE     0x3fee258u   // key object of the GUID attribute
 #define READER_READGUID_SLOT 34        // +0x110: bool readGuid(reader, handle, out[16])
 static const uint8_t EXPECT_RESOLVE_REF[15] = { 0x48,0x89,0x5c,0x24,0x10, 0x48,0x89,0x6c,0x24,0x18, 0x48,0x89,0x74,0x24,0x20 };
 typedef uint64_t (*resolve_fn)(void *objreader, uint64_t node, char *missing);
@@ -857,7 +895,7 @@ static uint64_t hook_resolve(void *objreader, uint64_t node, char *missing) {
 // FCOOP_ROLE=host / client. Starts when the file <instance>\lockstep_go exists (both games loaded, paused).
 #define LS_MAGIC 0x534c4f46u          // "FOLS"
 #define LS_PORT_CLIENT 27801
-#define RVA_PLAY_NEXT_FRAME 0x294db0u // GamCReplayFrame* nextFrame(replay)
+#define RVA_PLAY_NEXT_FRAME 0x2946b0u // GamCReplayFrame* nextFrame(replay)
 static const uint8_t EXPECT_PLAY_NEXT_FRAME[14] = { 0x4c,0x8b,0x41,0x58, 0x4c,0x8b,0xc9, 0x4d,0x85,0xc0, 0x74,0x49, 0x48,0x8b };
 typedef struct { uint32_t magic, seq; float dt; uint32_t arg3; uint64_t seed0, seed1; uint32_t nids, nnodes, nbytes, nev, evbytes, ncli; uint32_t rand0, rand1; uint64_t grng0, grng1; } ls_hdr;
 // packet: hdr | nids x (sig, guid) | command bytes | events | ncli x u32 (indices of the frame's commands that the client issued)
@@ -922,7 +960,7 @@ static void *find_component_rtti(const char *needle);
 #define LB_HELLO 1             // host: a = protocol, b = save size, data = file name; client: a = protocol
 #define LB_READY 2             // client: city loaded, a = component count (fingerprint)
 #define LB_GO    3             // host: start lockstep now
-#define LB_PROTO 1
+#define LB_PROTO 4   // 4: kit v2.4 (game 1.12.0.18)
 #define SV_MAGIC 0x56534f46u   // "FOSV" {magic, offset, bytes}
 #define SV_CHUNK (128 * 1024)
 static int g_lobby;
@@ -937,13 +975,31 @@ static void set_status(const char *fmt, ...) {
     char b[512]; va_list ap; va_start(ap, fmt); vsnprintf(b, sizeof b, fmt, ap); va_end(ap);
     EnterCriticalSection(&g_status_cs);
     if (strcmp(b, last) != 0) {
-        strcpy(last, b);
         wchar_t p[MAX_PATH], t[MAX_PATH];
         _snwprintf(p, MAX_PATH - 1, L"%ls\\status.txt", g_dir); p[MAX_PATH - 1] = 0;
         _snwprintf(t, MAX_PATH - 1, L"%ls\\status.tmp", g_dir); t[MAX_PATH - 1] = 0;
+        // write a temp file and rename it over status.txt (readers never see half a line). The rename can fail
+        // while someone holds status.txt open (seen in tests: it then kept failing and the status froze at
+        // "Receiving the city save: 35%" although the transfer went on), so retry briefly, then overwrite in place.
+        int ok = 0; DWORD err = 0;
         FILE *f = _wfopen(t, L"wb");
-        if (f) { fputs(b, f); fclose(f); MoveFileExW(t, p, MOVEFILE_REPLACE_EXISTING); }
-        logf_("status: %s", b);
+        if (f) {
+            fputs(b, f); fclose(f);
+            for (int i = 0; i < 5 && !ok; i++) { ok = MoveFileExW(t, p, MOVEFILE_REPLACE_EXISTING); if (!ok) { err = GetLastError(); Sleep(10); } }
+        }
+        if (!ok) {
+            HANDLE h = CreateFileW(p, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_ALWAYS, 0, NULL);
+            if (h != INVALID_HANDLE_VALUE) {
+                DWORD w = 0, len = (DWORD)strlen(b);
+                ok = WriteFile(h, b, len, &w, NULL) && w == len && SetEndOfFile(h);
+                CloseHandle(h);
+            }
+            static int warned;
+            if (!warned) { warned = 1; logf_("status: replacing status.txt failed (error %lu), wrote it in place (%s)", (unsigned long)err, ok ? "ok" : "failed too"); }
+        }
+        if (ok) strcpy(last, b);   // on failure the next call tries again
+        static char logged[512];
+        if (strcmp(b, logged) != 0) { strcpy(logged, b); logf_("status: %s", b); }
     }
     LeaveCriticalSection(&g_status_cs);
 }
@@ -1280,7 +1336,7 @@ static void ls_host_throttle(void) {
 
 // ---- lockstep stage 2: client actions go to the host --------------------------------------------------------
 #define LS_CMD_MAGIC 0x434c4f46u   // "FOLC"
-#define RVA_REC_COMMAND 0x298250u  // void recordCommand(replay, cmd): serialize cmd into replay's writer / current frame
+#define RVA_REC_COMMAND 0x297b50u  // void recordCommand(replay, cmd): serialize cmd into replay's writer / current frame
 static const uint8_t EXPECT_PUSH_CMD[15] = { 0x48,0x89,0x5c,0x24,0x10, 0x48,0x89,0x6c,0x24,0x18, 0x48,0x89,0x74,0x24,0x20 };
 static push_cmd_fn g_orig_push_cmd;
 static const uint8_t EXPECT_READ_CMD[18] = { 0x4c,0x8b,0xdc, 0x49,0x89,0x5b,0x10, 0x56, 0x57, 0x41,0x56, 0x48,0x81,0xec,0x00,0x01,0x00,0x00 };
@@ -1344,7 +1400,7 @@ static void *hook_read_cmd(void *frame, void *world, void **holder) {
 // ComCEvent<PlaCCompBuildingPart*>::trigger: when a player command's own event (cmd+0x28) fires inside the frame,
 // its listeners are the local UI (only the issuing side has them): run them outside the deterministic simulation
 // (RNG seed restored, created objects get local GUIDs instead of stream ones)
-#define RVA_PART_EVENT_FIRE 0x9ffa70u
+#define RVA_PART_EVENT_FIRE 0xa01cd0u
 static const uint8_t EXPECT_PART_EVENT_FIRE[15] = { 0x48,0x89,0x5c,0x24,0x10, 0x48,0x89,0x74,0x24,0x18, 0x48,0x89,0x7c,0x24,0x20 };
 typedef void (*part_event_fire_fn)(void *ev, void *arg);
 static part_event_fire_fn g_orig_part_event_fire;
@@ -1451,8 +1507,8 @@ static void *find_component_rtti(const char *needle) {
 // Event layout (24 bytes): {u32 type, owner guid[16], u8 a, u8 b, u8 c, u8 pad}
 #define EV_EDIT_MODE   2               // PlaCCompBuilding::setEditMode(comp, mode, force, notify)
 #define EV_PART_PLACED 3               // PlaCCompBuildingPart::setIsPlaced(comp, placed, recursive)
-#define RVA_SET_EDIT_MODE  0xcd1fa0u
-#define RVA_SET_IS_PLACED  0xcd3b90u
+#define RVA_SET_EDIT_MODE  0xcd37c0u
+#define RVA_SET_IS_PLACED  0xcd53b0u
 static const uint8_t EXPECT_SET_EDIT_MODE[14] = { 0x48,0x8b,0xc4, 0x44,0x88,0x48,0x20, 0x44,0x88,0x40,0x18, 0x88,0x50,0x10 };
 static const uint8_t EXPECT_SET_IS_PLACED[16] = { 0x48,0x89,0x6c,0x24,0x18, 0x56, 0x48,0x83,0xec,0x30, 0x0f,0xb6,0xea, 0x48,0x8b,0xf1 };
 typedef void (*set_edit_mode_fn)(void *comp, uint8_t mode, uint8_t force, uint8_t notify);
@@ -1463,9 +1519,9 @@ static int g_ui_depth;                 // only the outermost call is an event (b
 // EV_PART_PLACED carries the part's global transform (the build tool moves the preview outside the simulation):
 // 24-byte head + pos[3] + quat[4] + pad = 56 bytes
 #define EV_PART_PLACED_SIZE 56
-#define RVA_GO_GET_POS  0x4bf320u      // void getGlobalPosition(GameObject*, float out[3])
-#define RVA_GO_GET_ROT  0x4bf2a0u      // void getGlobalOrientation(GameObject*, float out[4])
-#define RVA_GO_SET_XF   0x4cb3a0u      // void setGlobalTransform(GameObject*, const float pos[3], const float quat[4])
+#define RVA_GO_GET_POS  0x4bfde0u      // void getGlobalPosition(GameObject*, float out[3])
+#define RVA_GO_GET_ROT  0x4bfd60u      // void getGlobalOrientation(GameObject*, float out[4])
+#define RVA_GO_SET_XF   0x4cbe60u      // void setGlobalTransform(GameObject*, const float pos[3], const float quat[4])
 // EV_XF_MATRIX (4): build-tool preview move: {head 24 (owner = game object GUID), float m[16]}
 static size_t ev_size(const uint8_t *e) {
     uint32_t t = *(const uint32_t *)e;
@@ -1503,7 +1559,7 @@ static int ui_capture(void) {
 // FUN_140c396a0 -> setEditMode, e.g. leaving edit mode after Bauen). Such calls are deferred to the frame boundary
 // both sides share: the host applies them after the frame and streams them; the client sends them to the host and
 // applies them when they come back (event flag byte 23 = 1).
-#define RA_TOOL_SET_EDIT_MODE 0xc39730u    // return address of the setEditMode call in FUN_140c396a0
+#define RA_TOOL_SET_EDIT_MODE 0xc3a1b0u    // return address of the setEditMode call in FUN_140c396a0
 static void ls_client_ui_event(const uint8_t *e);
 static void ls_make_edit_event(uint8_t ev[24], void *comp, uint8_t a, uint8_t b, uint8_t c, uint8_t deferred) {
     uint8_t *owner = NULL; memset(ev, 0, 24);
@@ -1716,7 +1772,7 @@ static uint8_t *hook_play_next_frame(uint8_t *R) {
 }
 
 // diagnostics: who creates objects (and so consumes replay ids) during lockstep frames
-#define RVA_CREATE_OBJECT_ID 0x1a5e30u   // GamCLevel::internalCreateObject (id assignment)
+#define RVA_CREATE_OBJECT_ID 0x1a5e90u   // GamCLevel::internalCreateObject (id assignment)
 static const uint8_t EXPECT_CREATE_OBJECT_ID[15] = { 0x48,0x89,0x5c,0x24,0x10, 0x48,0x89,0x6c,0x24,0x18, 0x48,0x89,0x74,0x24,0x20 };
 typedef void *(*create_obj_fn)(void *level);
 static create_obj_fn g_orig_create_obj;
@@ -1725,7 +1781,7 @@ static int g_in_create;
 
 // Object GUIDs as an ordered stream (frame-independent): the host records every GUID generated while an object is
 // created, the client hands out the same GUIDs in the same order.
-#define RVA_GUID_GEN 0x16cdb0u        // uint64_t *newGuid(uint64_t out[2]) (boost uuid v4 via BCryptGenRandom)
+#define RVA_GUID_GEN 0x16ce10u        // uint64_t *newGuid(uint64_t out[2]) (boost uuid v4 via BCryptGenRandom)
 static const uint8_t EXPECT_GUID_GEN[16] = { 0x48,0x89,0x5c,0x24,0x08, 0x57, 0x48,0x81,0xec,0xa0,0x00,0x00,0x00, 0x48,0x8b,0xd9 };
 typedef uint64_t *(*guid_gen_fn)(uint64_t *out);
 static guid_gen_fn g_orig_guid_gen;
